@@ -4,7 +4,7 @@ root_path = pwd;
 toolbox = fullfile(pwd,'matlab-toolbox');
 addpath(genpath(toolbox));
 data_path = fullfile(root_path, 'data', filesep);
-fulldata_path = fullfile(data_path,'MHK_TR_10'); % -----------------Tunable
+fulldata_path = fullfile(data_path,'MHK_R_10'); % -----------------Tunable
 
 %% Options for different simulation results
 % prefix and suffix of output files
@@ -30,7 +30,7 @@ else
 end
 
 % Required states
-req_states = {'PtfmPitch','GenSpeed','RotThrust'};
+req_states = {'PtfmPitch','GenSpeed','YawBrTAxp'};
 
 % required controls
 req_controls = {'Wind1VelX','GenTq','BldPitch1','Wave1Elev'};
@@ -113,7 +113,7 @@ title('GenSpeed')
 nt = length(time);
 
 
-nsplit = 50; %<--------------------------- Tunable.
+nsplit = 60; %<--------------------------- Tunable.
 % This parameter corresponds to the percentage of data we use for traning
 % and testing
 
@@ -131,14 +131,33 @@ ntest = length(indTest);
 XTrainA = Input(:,indTrain);
 TTrainA = Output(:,indTrain);
 
+%% Option 1
+
+%y(t) = f(u(t),y(t-1))
+
+XTrainA = [XTrainA(:,2:end);TTrainA(:,1:end-1)];
+TTrainA = TTrainA(:,2:end);
+
+indTrain = indTrain(2:end);
+
+%% Option 2
+
+
 XTestA = Input(:,indTest);
 TTestA = Output(:,indTest);
+
+input_test1 = [XTestA(:,1);TTestA(:,1)];
+
+%XTestA = [XTestA;]
 
 time_train = time(indTrain); 
 time_test = time(indTest);
 
-n_inputs = size(Input,1);
-n_outputs = size(Output,1);
+n_inputs = size(XTrainA,1);
+n_outputs = size(TTrainA,1);
+
+
+
 
 % calculate the mean and standard deviation, and
 % normalize the data
@@ -154,20 +173,31 @@ sigmaT = std(TTrainA,0,2);
 ncells = 100;
 
 % get index
-indTrain_ = reshape(indTrain,[],ncells);
+%indTrain_ = reshape(indTrain,[],ncells);
+
+
+total = length(indTrain)+1;
+n_per_cell = total/100;
+n_last_cell = (total-1) - n_per_cell*99;
+
+ind_train1 = reshape(1:n_per_cell*99,[],99);
+ind_last = n_per_cell*99+1:(total-1);
 
 % initialize
-XTrain = cell(1,ncells);
-TTrain = cell(1,ncells);
+XTrain = {XTrainA};
+TTrain = {TTrainA};
 
-% Reshape and normalize
-for i = 1:ncells
-    ind_ = indTrain_(:,i);
+% % Reshape and normalize
+for i = 1:ncells-1
+    ind_ = ind_train1(:,i);
 
     XTrain{i} = (XTrainA(:,ind_) - muX)./sigmaX;
     TTrain{i} = (TTrainA(:,ind_) - muT)./sigmaT;
 
 end
+
+XTrain{end+1} = (XTrainA(:,ind_last) - muX)./sigmaX;
+TTrain{end+1} = (TTrainA(:,ind_last) - muT)./sigmaT;
 
 %% Train LSTM
 
@@ -195,7 +225,6 @@ net = trainNetwork(XTrain,TTrain,layers,options);
 t_train = toc;
 
 % normalize test
-XTest = (XTestA - muX)./sigmaX;
 TTest = (TTestA - muT)./sigmaT;
 
 %% Test LSTM
@@ -203,15 +232,24 @@ TTest = (TTestA - muT)./sigmaT;
 % initalize storage array
 states_lstm = zeros(n_outputs,ntest);
 
+
+% initialize the first step
+states_lstm(:,1) = TTest(:,1);
+
 % predict using the trained net
 tic;
-for i = 1:ntest
+for i = 2:ntest
 
-    % extract
-    input_ = XTest(:,i);
+    input_i = zeros(n_inputs,1);
+
+    % extract just the inputs and normalize them
+    input_i(1:4) = (XTestA(:,i) - muX(1:4))./sigmaX(1:4);
+    
+    % no need to normalize the states from the previous timestep
+    input_i(5:end) = states_lstm(:,i-1);
 
     % predict
-    [net,states_lstm(:,i)] = predictAndUpdateState(net,input_);
+    [net,states_lstm(:,i)] = predictAndUpdateState(net,input_i);
 
 
 end
@@ -231,7 +269,7 @@ hf.Color = 'w';
 
 ind = 1;
 
-subplot(2,1,ind)
+subplot(3,1,ind)
 hold on;
 plot(time_test,states_act(ind,:),'k')
 plot(time_test,states_lstm(ind,:),'r')
@@ -241,11 +279,21 @@ legend('original','LSTM')
 
 ind = ind + 1;
 
-subplot(2,1,ind)
+subplot(3,1,ind)
 hold on;
 plot(time_test,states_act(ind,:),'k')
 plot(time_test,states_lstm(ind,:),'r')
 xlabel('Time'); ylabel('GenSpeed')
 legend('original','LSTM')
 
+
+
+ind = ind + 1;
+
+subplot(3,1,ind)
+hold on;
+plot(time_test,states_act(ind,:),'k')
+plot(time_test,states_lstm(ind,:),'r')
+xlabel('Time'); ylabel('RotThrust')
+legend('original','LSTM')
 return
